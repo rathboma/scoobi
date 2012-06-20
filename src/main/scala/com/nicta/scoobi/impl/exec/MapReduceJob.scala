@@ -18,6 +18,7 @@ package impl
 package exec
 
 import java.io.File
+import java.net.URI
 import org.apache.commons.logging.LogFactory
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
@@ -27,7 +28,9 @@ import org.apache.hadoop.mapreduce.Reducer
 import org.apache.hadoop.mapreduce.Partitioner
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
 import org.apache.hadoop.io.RawComparator
-import scala.collection.mutable.{Map => MMap}
+import org.apache.hadoop.tools.DistCp
+import scala.collection.immutable.{List => IList}
+import scala.collection.mutable.{Map => MMap, ListBuffer}
 import scala.collection.mutable.{MutableList=> MList}
 import Option.{apply => ?}
 
@@ -39,8 +42,13 @@ import util._
 import application.ScoobiConfiguration
 import ScoobiConfiguration._
 
+
+case class OutputOperation(src: Path, destination: Path)
 /** A class that defines a single Hadoop MapReduce job. */
+
 class MapReduceJob(stepId: Int) {
+  
+
   lazy val logger = LogFactory.getLog("scoobi.Step")
 
   import scala.collection.mutable.{Set => MSet, Map => MMap}
@@ -228,7 +236,7 @@ class MapReduceJob(stepId: Int) {
       tmpFile.delete
     }
 
-    case class OutputOperation(src: Path, destination: Path)
+    
     def sameFs(a: Path, b: Path): Boolean = {
       a.getFileSystem(job.getConfiguration).getUri.equals(
         b.getFileSystem(job.getConfiguration).getUri
@@ -267,7 +275,7 @@ class MapReduceJob(stepId: Int) {
 
     val finalOps = outputOperations.toList
     // 1. process same filesystem operations
-    val sameFS = finalOps.filter(sameFs(_.src, _.destination))
+    val sameFS = finalOps.filter{o => sameFs(o.src, o.destination)}
     sameFS.foreach{op =>
       fs.mkdirs(op.destination.getParent)
       fs.rename(op.src, op.destination)
@@ -275,22 +283,19 @@ class MapReduceJob(stepId: Int) {
 
     // 2. process different filesystem operations
     // a) group by output filesystem
-    val fsGroups: Map[URI, List[OutputOperation]] = finalOps.groupBy(_.destination.getFileSystem(job.getConfiguration).getUri)
-    fsGroups.foreach{case (uri: URI, ops: List[OutputOperation] ) =>
+    val fsGroups: Map[URI, IList[OutputOperation]] = finalOps.groupBy(_.destination.getFileSystem(job.getConfiguration).getUri)
+    fsGroups.foreach{case (uri, ops) =>
       // a.a) get all those that are going to the same directory together for a distCp:
-      val outputGroupings: Map[Path, List[OutputOperation]] = ops.groupBy(_.destination.getParent)
-      outputGroupings.foreach{case (outputDir: Path, sources: List[OutputOperation]) =>
-        val cpArgs = new DistCp.Arguments(
-          srcs = sources.map(_.src).asJava,
-          dst  = outputDir,
-          log = null,
-          flags = EnumSet.noneOf(Options.class),
-          preservedAttributes = null,
-          filelimit = Long.MaxValue,
-          sizelimit = Long.MaxValue,
-          mapredSslConf = null
-          )
-        DistCp.copy(job.getConfiguration, cpArgs)
+      val outputGroupings: Map[Path, IList[OutputOperation]] = ops.groupBy(_.destination.getParent)
+      outputGroupings.foreach{case (outputDir, sources) =>
+        val args: Array[String] = (sources.map(_.src.toString) ::: List(outputDir.toString)).toArray
+        val dcp = new DistCp(job.getConfiguration)
+        dcp.run(args)
+        val outputFileSys = FileSystem.get(outputDir.toUri, job.getConfiguration)
+        sources.foreach{src =>
+          val outputFile = new Path(outputDir, src.src.getName)
+          if (! outputFileSys.exists(outputFile)) throw new IllegalStateException("distcp failed. %s is not in output directory %s" format(src.src.getName, outputDir.toString))
+        }
       }
     }
 

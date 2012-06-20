@@ -19,6 +19,7 @@ libraryDependencies ++= Seq(
   "org.apache.avro" % "avro-mapred" % "1.7.0",
   "org.apache.avro" % "avro" % "1.7.0",
   "org.apache.hadoop" % "hadoop-core" % "0.20.2-cdh3u1",
+  "org.apache.hadoop" % "hadoop-tools" % "0.20.2-cdh3u1",
   "com.thoughtworks.xstream" % "xstream" % "1.4.2",
   "org.specs2" %% "specs2" % "1.11" % "optional",
   "org.specs2" %% "specs2-scalaz-core" % "6.0.1",
