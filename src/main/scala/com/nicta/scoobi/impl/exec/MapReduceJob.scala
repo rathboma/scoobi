@@ -94,6 +94,8 @@ class MapReduceJob(stepId: Int) {
     val job = new Job(configuration, configuration.jobId + "(Step-" + stepId + ")")
     val fs = FileSystem.get(job.getConfiguration)
 
+    // TODO (rathbone): make the choice of tmpOutputPath smart based on requested output filesystems.
+    
     /* Job output always goes to temporary dir from which files are subsequently moved from
      * once the job is finished. */
     val tmpOutputPath = new Path(configuration.workingDirectory, "tmp-out")
@@ -226,22 +228,32 @@ class MapReduceJob(stepId: Int) {
       tmpFile.delete
     }
 
+    case class OutputOperation(src: Path, destination: Path)
+    def sameFs(a: Path, b: Path): Boolean = {
+      a.getFileSystem(job.getConfiguration).getUri.equals(
+        b.getFileSystem(job.getConfiguration).getUri
+        )
+    }
+
     /* Move named file-based sinks to their correct output paths. */
     val outputFiles = fs.listStatus(tmpOutputPath) map { _.getPath }
     val FileName = """ch(\d+)out(\d+)-.-\d+.*""".r
-
+    val outputOperations: ListBuffer[OutputOperation] = new ListBuffer[OutputOperation]()
     reducers.foreach { case (sinks, (_, reducer)) =>
 
       sinks.zipWithIndex.foreach { case (sink, ix) =>
-        val outputPath = {
-          val jobCopy = new Job(job.getConfiguration)
-          sink.outputConfigure(jobCopy)
-          FileOutputFormat.getOutputPath(jobCopy)
-        }
-        ?(outputPath) foreach { p =>
-          fs.mkdirs(p)
-          outputFiles filter (forOutput) foreach { srcPath =>
-            fs.rename(srcPath, new Path(p, srcPath.getName))
+        
+        outputFiles filter (forOutput) foreach { srcPath =>
+          val outputPath = {
+            val jobCopy = new Job(job.getConfiguration)
+            sink.outputConfigure(jobCopy)
+            FileOutputFormat.getOutputPath(jobCopy)
+          }
+          ?(outputPath) foreach { p =>
+            // this is the simplest way to use different file systems.
+            val realOutput = new Path(p, srcPath.getName)
+            outputOperations.append(OutputOperation(srcPath, realOutput))
+
           }
         }
 
@@ -252,6 +264,36 @@ class MapReduceJob(stepId: Int) {
 
       }
     }
+
+    val finalOps = outputOperations.toList
+    // 1. process same filesystem operations
+    val sameFS = finalOps.filter(sameFs(_.src, _.destination))
+    sameFS.foreach{op =>
+      fs.mkdirs(op.destination.getParent)
+      fs.rename(op.src, op.destination)
+    }
+
+    // 2. process different filesystem operations
+    // a) group by output filesystem
+    val fsGroups: Map[URI, List[OutputOperation]] = finalOps.groupBy(_.destination.getFileSystem(job.getConfiguration).getUri)
+    fsGroups.foreach{case (uri: URI, ops: List[OutputOperation] ) =>
+      // a.a) get all those that are going to the same directory together for a distCp:
+      val outputGroupings: Map[Path, List[OutputOperation]] = ops.groupBy(_.destination.getParent)
+      outputGroupings.foreach{case (outputDir: Path, sources: List[OutputOperation]) =>
+        val cpArgs = new DistCp.Arguments(
+          srcs = sources.map(_.src).asJava,
+          dst  = outputDir,
+          log = null,
+          flags = EnumSet.noneOf(Options.class),
+          preservedAttributes = null,
+          filelimit = Long.MaxValue,
+          sizelimit = Long.MaxValue,
+          mapredSslConf = null
+          )
+        DistCp.copy(job.getConfiguration, cpArgs)
+      }
+    }
+
 
     fs.delete(tmpOutputPath, true)
   }
