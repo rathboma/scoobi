@@ -140,12 +140,20 @@ case class ScoobiConfiguration(configuration: Configuration = new Configuration,
     configuration.set(key, value)
   }
 
-  private lazy val scoobiTmpDir = FileSystem.get(configuration).getHomeDirectory.toUri.getPath + "/.scoobi-tmp/"
-  private lazy val defaultWorkDir = withTrailingSlash(scoobiTmpDir + jobId)
+  private lazy val scoobiTmpDir = scoobiTmpDirFor(FileSystem.get(conf))
+  private lazy val defaultWorkDir: String = withTrailingSlash(scoobiTmpDir + jobId)
 
-  private def withTrailingSlash(s: String) = if (s endsWith "/") s else s + '/'
+  private def withTrailingSlash(s: String): String = if (s endsWith "/") s else s + '/'
 
   lazy val workingDirectory: Path = new Path(defaultWorkDir)
+
+  def workingDirFor(fs: FileSystem): Path = {
+    new Path(withTrailingSlash(scoobiTmpDirFor(fs) + jobId))
+  }
+
+  def scoobiTmpDirFor(fs: FileSystem): String = {
+    fs.getHomeDirectory.toString + "/.scoobi-tmp/"
+  }
 
   def deleteScoobiTmpDirectory = fs.delete(new Path(scoobiTmpDir), true)
 

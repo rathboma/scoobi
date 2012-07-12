@@ -22,6 +22,7 @@ import java.net.URI
 import org.apache.commons.logging.LogFactory
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapreduce.Job
 import org.apache.hadoop.mapreduce.Mapper
 import org.apache.hadoop.mapreduce.Reducer
@@ -96,6 +97,20 @@ class MapReduceJob(stepId: Int) {
     reducers += (outputs.toList -> tr)
   }
 
+  def samePathFs(a: Path, b: Path, conf: Configuration): Boolean = {
+    a.getFileSystem(conf).getUri.equals(
+      b.getFileSystem(conf).getUri
+      )
+  }
+
+  def sameFs(a: FileSystem, b: FileSystem): Boolean = {
+    a.getUri.equals(
+      b.getUri
+      )
+  }
+
+
+
   /** Take this MapReduce job and run it on Hadoop. */
   def run(implicit configuration: ScoobiConfiguration) = {
 
@@ -106,7 +121,34 @@ class MapReduceJob(stepId: Int) {
     
     /* Job output always goes to temporary dir from which files are subsequently moved from
      * once the job is finished. */
-    val tmpOutputPath = new Path(configuration.workingDirectory, "tmp-out")
+
+      def collectOutputFilesystems(): List[FileSystem] = {
+        val results: ListBuffer[FileSystem] = new ListBuffer[FileSystem]
+        val allFss = reducers.flatMap{case(sinks, reducer) =>
+          sinks.flatMap{sink => 
+            ?({
+              val jobCopy = new Job(job.getConfiguration)
+              sink.outputConfigure(jobCopy)
+              FileOutputFormat.getOutputPath(jobCopy).getFileSystem(jobCopy.getConfiguration)
+              })
+          }
+        }
+        allFss.foreach{fs => 
+          if( results.find{f => sameFs(f, fs)} == None){
+            results.append(fs)
+          }
+        }
+        results.toList
+      }
+
+    val outputFileSystems: List[FileSystem] = collectOutputFilesystems()
+
+    val tmpOutputPath = outputFileSystems match {
+      case one :: others => {
+        new Path(configuration.workingDirFor(one), "tmp-out")
+      }
+      case _ => throw new IllegalStateException("no output filesystems? Something is very wrong")
+    }
 
     /** Make temporary JAR file for this job. At a minimum need the Scala runtime
       * JAR, the Scoobi JAR, and the user's application code JAR(s). */
@@ -237,11 +279,7 @@ class MapReduceJob(stepId: Int) {
     }
 
     
-    def sameFs(a: Path, b: Path): Boolean = {
-      a.getFileSystem(job.getConfiguration).getUri.equals(
-        b.getFileSystem(job.getConfiguration).getUri
-        )
-    }
+
 
     /* Move named file-based sinks to their correct output paths. */
     val outputFiles = fs.listStatus(tmpOutputPath) map { _.getPath }
@@ -275,7 +313,7 @@ class MapReduceJob(stepId: Int) {
 
     val finalOps = outputOperations.toList
     // 1. process same filesystem operations
-    val sameFS = finalOps.filter{o => sameFs(o.src, o.destination)}
+    val sameFS = finalOps.filter{o => samePathFs(o.src, o.destination, job.getConfiguration)}
     sameFS.foreach{op =>
       fs.mkdirs(op.destination.getParent)
       fs.rename(op.src, op.destination)
@@ -292,6 +330,7 @@ class MapReduceJob(stepId: Int) {
         val dcp = new DistCp(job.getConfiguration)
         dcp.run(args)
         val outputFileSys = FileSystem.get(outputDir.toUri, job.getConfiguration)
+        // validate that all the files ended up copied over.
         sources.foreach{src =>
           val outputFile = new Path(outputDir, src.src.getName)
           if (! outputFileSys.exists(outputFile)) throw new IllegalStateException("distcp failed. %s is not in output directory %s" format(src.src.getName, outputDir.toString))
