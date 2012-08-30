@@ -98,15 +98,11 @@ class MapReduceJob(stepId: Int) {
   }
 
   def samePathFs(a: Path, b: Path, conf: Configuration): Boolean = {
-    a.getFileSystem(conf).getUri.equals(
-      b.getFileSystem(conf).getUri
-      )
+    a.getFileSystem(conf).getUri == b.getFileSystem(conf).getUri
   }
 
   def sameFs(a: FileSystem, b: FileSystem): Boolean = {
-    a.getUri.equals(
-      b.getUri
-      )
+    a.getUri == b.getUri
   }
 
 
@@ -143,12 +139,14 @@ class MapReduceJob(stepId: Int) {
 
     val outputFileSystems: List[FileSystem] = collectOutputFilesystems()
 
-    val tmpOutputPath = outputFileSystems match {
-      case one :: others => {
-        new Path(configuration.workingDirFor(one), "tmp-out")
-      }
-      case _ => throw new IllegalStateException("no output filesystems? Something is very wrong")
-    }
+    val tmpOutputPath = new Path(configuration.workingDirFor(fs), "tmp-out")
+    // new way
+    // val tmpOutputPath = outputFileSystems match {
+    //   case one :: others => {
+    //     new Path(configuration.workingDirFor(one), "tmp-out")
+    //   }
+    //   case _ => throw new IllegalStateException("no output filesystems? Something is very wrong")
+    // }
 
     /** Make temporary JAR file for this job. At a minimum need the Scala runtime
       * JAR, the Scoobi JAR, and the user's application code JAR(s). */
@@ -289,7 +287,7 @@ class MapReduceJob(stepId: Int) {
 
       sinks.zipWithIndex.foreach { case (sink, ix) =>
         
-        outputFiles filter (forOutput) foreach { srcPath =>
+        outputFiles.filter(forOutput).foreach { srcPath =>
           val outputPath = {
             val jobCopy = new Job(job.getConfiguration)
             sink.outputConfigure(jobCopy)
@@ -320,13 +318,17 @@ class MapReduceJob(stepId: Int) {
     }
 
     // 2. process different filesystem operations
-    // a) group by output filesystem
+    // group by output filesystem
     val fsGroups: Map[URI, IList[OutputOperation]] = finalOps.groupBy(_.destination.getFileSystem(job.getConfiguration).getUri)
     fsGroups.foreach{case (uri, ops) =>
       // a.a) get all those that are going to the same directory together for a distCp:
       val outputGroupings: Map[Path, IList[OutputOperation]] = ops.groupBy(_.destination.getParent)
       outputGroupings.foreach{case (outputDir, sources) =>
         val args: Array[String] = (sources.map(_.src.toString) ::: List(outputDir.toString)).toArray
+        val conf = new Configuration()
+        for (entry <- job.getConfiguration.asScala) {
+          conf.set(entry.getKey, entry.getValue)
+        }
         val dcp = new DistCp(job.getConfiguration)
         dcp.run(args)
         val outputFileSys = FileSystem.get(outputDir.toUri, job.getConfiguration)
