@@ -18,9 +18,9 @@ object ScoobiEnvironment {
   // jobs, and the user probably doesn't care about this.
 
   // On the job tracker, we need the Job object
-  private var job: Job = _
+  @transient private var job: Job = _
   // On the task tracker, we need the context from the mapper or reducer
-  private var taskContext: TaskInputOutputContext[_,_,_,_] = _
+  @transient private var taskContext: TaskInputOutputContext[_,_,_,_] = _
 
   /**
    * Set the Job object, if we're running the job-running code on the
